@@ -32,8 +32,8 @@ smin = 0.2
 smax = 0.9
 k = range(1, m + 1)
 # k = [1, 2, 3, 4] ##(0,m]
-scale = [smin + (smax - smin) / (m - 1) * (k_i - 1) for k_i in k]
-scale_diff = scale[1] - scale[0]
+scale_factors = [smin + (smax - smin) / (m - 1) * (k_i - 1) for k_i in k]
+scale_factor_diff = scale_factors[1] - scale_factors[0]
 im_shape = 300
 
 
@@ -66,7 +66,7 @@ def bbox_center(a):
 
 def aboxDims(my_scale, ratio, fm):
     if ratio == 1.1:
-        my_scale = my_scale + scale_diff
+        my_scale = my_scale + scale_factor_diff
         ratio = 1
     w = my_scale * fm * np.sqrt(ratio)
     h = my_scale * fm / np.sqrt(ratio)
@@ -176,7 +176,7 @@ def loadShowImages():
     plt.pause(0.05)
 
     for r in box_ratios:
-        up_l, low_r = featureBox(c_c[0], c_r[0], fm=im.shape[0] / this_scale, scale=scale[this_scale], ratio=r)
+        up_l, low_r = featureBox(c_c[0], c_r[0], fm=im.shape[0] / this_scale, scale=scale_factors[this_scale], ratio=r)
         cv2.rectangle(im, tuple(np.round(up_l).astype(np.int)),
                       tuple(np.round(low_r).astype(np.int)), (255, 0, 0))
     this_scale = 4
@@ -185,7 +185,7 @@ def loadShowImages():
         for c in c_c:
             drawBox(im, (int(c), int(r)), 5)
     for r in box_ratios:
-        up_l, low_r = featureBox(c_c[3], c_r[2], fm=im.shape[0] / this_scale, scale=scale[this_scale - 1], ratio=r)
+        up_l, low_r = featureBox(c_c[3], c_r[2], fm=im.shape[0] / this_scale, scale=scale_factors[this_scale - 1], ratio=r)
         cv2.rectangle(im, tuple(np.round(up_l).astype(np.int)),
                       tuple(np.round(low_r).astype(np.int)), (0, 255, 0))
     # cv2.imshow('bbox', im), cv2.waitKey(0)
@@ -268,7 +268,8 @@ def make_all_boxes():
     scale_groups = []
     offset = 0.5
     all_boxes = {}
-    for feature_scale, my_scale in zip(feature_scales, scale):
+    all_box_pixels = {}
+    for feature_scale, scale_factor in zip(feature_scales, scale_factors):
         dtype = np.float32
         boxes = []
         # cent_rows, cent_cols = centers(im_shape, this_scale)
@@ -277,14 +278,29 @@ def make_all_boxes():
         cent_row = im_shape // 2
         cent_col = im_shape // 2
         for r in box_ratios:
-            box = int_cast_tuple(featureBox(cent_col, cent_row, fm=im_shape / feature_scale, scale=my_scale, ratio=r))
+            box = int_cast_tuple(featureBox(cent_col, cent_row, fm=im_shape / feature_scale, scale=scale_factor, ratio=r))
             boxes.append(box)
-            all_boxes[feature_scale, my_scale, r] = box
+            all_boxes[feature_scale, r] = box
+            up_l = box[0]
+            low_r = box[1]
+            box_extent = {}
+            for i in range(up_l[0], low_r[0]):
+                for j in range(up_l[1], low_r[1]):
+                    box_extent[(i, j)] = 1;
+            all_box_pixels[feature_scale, r] = box_extent
+        plt.figure(5)
+      #  img = np.zeros([300, 300])
+      #  for box in boxes:
+      #      cv2.rectangle(img, box[0], box[1], (255,255,255))
+      #      my_title = "scale: {}".format(feature_scale)
+      #  plt.imshow(img)
+      #  plt.title(my_title)
+      #  plt.pause(0.1)
         scale_groups.append(boxes)
-    return scale_groups, all_boxes
+    return scale_groups, all_boxes, all_box_pixels
 
 
-scale_groups, all_boxes = make_all_boxes()
+scale_groups, all_boxes, all_boxes_pixels = make_all_boxes()
 
 
 def make_all_centers():
@@ -305,23 +321,21 @@ def shift_box(bb1, bb2):
 
 def realtime_jacc(bb1):
     jacc = {}
-    up_l = bb1[0]
-    low_r = bb1[1]
-    jac_map = {}
-    for i in range(up_l[0], low_r[0]):
-        for j in range(up_l[1], low_r[1]):
-            jac_map[(i, j)] = 1;
-    size_box_1 = abs(up_l[0] - low_r[0]) * abs(up_l[1] - low_r[1])
+    for feature_scale in feature_scales:
+        for ratio in box_ratios:
+            bb2 = all_boxes[feature_scale, ratio]
+            up_l = bb2[0]
+            low_r = bb2[1]
+            size_box_1 = abs(up_l[0] - low_r[0]) * abs(up_l[1] - low_r[1])
 
-    for feature_scale, my_scale in zip(feature_scales, scale):
-        for r in box_ratios:
-            bb2 = all_boxes[feature_scale, my_scale, r]
-            bb2_s = shift_box(bb1, bb2)
-            if boxes_overlap(bb1, bb2_s):
+            jac_map = all_boxes_pixels[feature_scale, ratio]
+            bb1_s = shift_box(bb2, bb1)
+
+            #    pass
+            if boxes_overlap(bb2, bb1_s):
                 overlap_pixels = []
-
-                up_l = bb2_s[0]
-                low_r = bb2_s[1]
+                up_l = bb1_s[0]
+                low_r = bb1_s[1]
                 overlap_count = 0
                 for i in range(up_l[0], low_r[0]):
                     for j in range(up_l[1], low_r[1]):
@@ -334,8 +348,8 @@ def realtime_jacc(bb1):
                 AINTB = overlap_count
                 jac_ov = AINTB / AUB
                 if jac_ov > 0.5:
-                    off = tuple_sub(bb2_s[1], bb1[1])
-                    jacc[feature_scale, my_scale, r] = (jac_ov, bb2, off)
+                    off = tuple_sub(bb1_s[1], bb1[1])
+                    jacc[feature_scale, ratio] = (jac_ov, bb2, off)
 
     return jacc
 
@@ -412,78 +426,92 @@ def make_label(box, label, obj_class, im):
     jacc = realtime_jacc(box1)
     for key in jacc.keys():
         jd, box2, off = jacc[key]  # key is (feature scale, scale factor, ratio)
-    scale = key[0]
-    r = key[2]
-    centers = all_centers[scale]
-    closest, num = find_closest_center(centers, box1)
+        scale = key[0]
+        r = key[1]
+        centers = all_centers[scale]
+        closest, num = find_closest_center(centers, box1)
 
-    jacc_box = center_box(closest, box2)
-    jacc_box = int_cast_tuple(jacc_box)
-    offsets = find_offset(jacc_box, box1)
-    boxnum = box_ratios.index(r)
-    label[scale][floor(num / scale), num % scale, boxnum * 5:(boxnum + 1) * 5] = \
-        [1, offsets[0], offsets[1], offsets[2], offsets[3]]
+        jacc_box = center_box(closest, box2)
+        jacc_box = int_cast_tuple(jacc_box)
+        offsets = find_offset(jacc_box, box1)
+        boxnum = box_ratios.index(r)
+        label[scale][floor(num / scale), num % scale, boxnum * 5:(boxnum + 1) * 5] = \
+            [1, offsets[0], offsets[1], offsets[2], offsets[3]]
     # cv2.rectangle(im, jacc_box[0], jacc_box[1], (255, 255, 255))
     # plt.imshow(im)
     # plt.pause(0.01)
 
 
 def read_label(label, im):
-    plt.figure(1)
+    plt.figure(2)
+
     for scale in feature_scales:
         lab = label[scale]
-        for n, i in enumerate(range(0, 30, 5)):
+        for i, n in enumerate(range(0, 30, 5)):
+            copy_img = im.copy()
             single_ratio = lab[:, :, n]
             where = np.argwhere(single_ratio)
             for loc in where:
-                r = box_ratios[i]
-                box = scale_groups[scale][loc[0] + loc[1] * scale]
+                scale_center = all_centers[scale][loc[1] + scale * loc[0]]
+                ratio = box_ratios[i]
+                box = all_boxes[scale,ratio]
+                box = int_cast_tuple(center_box(scale_center, box))
+                # (left, top, right, bottom)
                 c, t, l, b, r = lab[loc[0], loc[1], n:n + 5]
-                box2 = int_cast_tuple((tuple_add(box[0], (t, l)), tuple_add(box[1], (b, r))))
-                cv2.rectangle(im, box2[0], box2[1], (255, 255, 255))
-                plt.imshow(im)
-                plt.pause(0.01)
+                #cv2.rectangle(copy_img, box[0], box[1], (255, 0, 0))
+                #plt.imshow(copy_img)
+                #plt.pause(0.01)
+
+                #box2 = int_cast_tuple((tuple_add(box[0], (t, l)), tuple_add(box[1], (b, r))))
+                #cv2.rectangle(copy_img, box2[0], box2[1], (0, 0, 255))
+                #plt.imshow(copy_img)
+                #plt.pause(0.01)
+                #pass
 
 
 if __name__ == '__main__':
-    p = pickle.load(open('200.p', 'rb'))
-    im = p['old_pic']
-    im = cv2.resize(im, (300, 300))
-    # box1 = ((10, 10), (100, 100))
-    # box1 = ((2, 39), (36, 73))
-    logoss = p['logos']
-    smiless = p['smiles']
-    label = {}
-    k = len(box_ratios)
-    label[8] = np.zeros(shape=[8, 8, 5 * k])
-    label[4] = np.zeros(shape=[4, 4, 5 * k])
-    label[2] = np.zeros(shape=[2, 2, 5 * k])
-    label[1] = np.zeros(shape=[1, 1, 5 * k])
+    file_names = [file for file in os.listdir('.') if file.endswith('p')]
+    for file in file_names:
+        p = pickle.load(open(file, 'rb'))
+        im = p['old_pic']
+        im = cv2.resize(im, (300, 300))
+        # box1 = ((10, 10), (100, 100))
+        # box1 = ((2, 39), (36, 73))
+        logoss = p['logos']
+        smiless = p['smiles']
+        label = {}
+        k = len(box_ratios)
+        label[8] = np.zeros(shape=[8, 8, 5 * k])
+        label[4] = np.zeros(shape=[4, 4, 5 * k])
+        label[2] = np.zeros(shape=[2, 2, 5 * k])
+        label[1] = np.zeros(shape=[1, 1, 5 * k])
+        #plt.figure(1)
+        #for logo in logoss:
+        #    box1 = logo.get_box(300, 300)
+        #    cv2.rectangle(im, box1[0], box1[1], (255, 255, 255))
+        #    plt.imshow(im)
+        #    im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+        #    im_save = im.copy()
 
-    for logo in logoss:
-        box1 = logo.get_box(300, 300)
-        # cv2.rectangle(im, box1[0], box1[1], (255, 255, 255))
-        # plt.imshow(im)
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-        im_save = im.copy()
+            # loadShowImages()
+            # for boxes in scale_groups:
+        #    make_label(box=box1, label=label, obj_class=1, im=im_save)
 
-        # loadShowImages()
-        plt.figure(1)
-        # for boxes in scale_groups:
-        make_label(box=box1, label=label, obj_class=1, im=im_save)
+        for smile in smiless:
+            box1 = smile.get_box(300, 300)
+            #cv2.rectangle(im, box1[0], box1[1], (255, 255, 255))
+            #plt.imshow(im)
+            #im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+            #im_save = im.copy()
 
-    for smile in smiless:
-        box1 = smile.get_box(300, 300)
-        # cv2.rectangle(im, box1[0], box1[1], (255, 255, 255))
-        # plt.imshow(im)
-        im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-        im_save = im.copy()
+            # loadShowImages()
+            # for boxes in scale_groups:
+            make_label(box=box1, label=label, obj_class=1, im=im)
 
-        # loadShowImages()
-        plt.figure(1)
-        # for boxes in scale_groups:
-        make_label(box=box1, label=label, obj_class=2, im=im_save)
+            # im = im_save.copy()
+        read_label(label, im)
+        p['label']=label
+        pickle.dump(p, open(p['name'][:-4]+'.p', "wb"))
+        print(p['name'][:-4]+'.p')
 
-        # im = im_save.copy()
-    read_label(label, im)
-    pass
+        pass
